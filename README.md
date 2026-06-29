@@ -43,9 +43,26 @@ uv run cpu-limit pid 1234 --cpu 25
 uv run cpu-limit run --cpu 25 -- notepad.exe
 ```
 
+## 打包 exe
+
+Windows `.exe` 需要在 Windows 上构建。打开 Windows PowerShell 或 cmd，在项目目录运行：
+
+```bash
+uv run --extra build python build_exe.py
+```
+
+生成文件：
+
+```text
+dist/CPUProcessLimiter.exe
+```
+
+如果需要限制管理员权限进程，请右键以管理员身份运行生成的 exe。
+
 ## 文件结构
 
 - `main.py`：轻量 GUI 入口。
+- `build_exe.py`：使用 PyInstaller 打包 Windows exe。
 - `src/cpu_process_limit_windows/core.py`：Win32 API 调用和 CPU 限制会话逻辑。
 - `src/cpu_process_limit_windows/config.py`：读取和保存 `$HOME/.cpu_limit/config.json`。
 - `src/cpu_process_limit_windows/settings.py`：默认设置和输入校验。

@@ -9,6 +9,11 @@ dependencies = [
     "pystray>=0.19.5",
 ]
 
+[project.optional-dependencies]
+build = [
+    "pyinstaller>=6.0",
+]
+
 [project.scripts]
 cpu-limit = "cpu_process_limit_windows.cli:main"
 cpu-limit-ui = "cpu_process_limit_windows.ui:main"
