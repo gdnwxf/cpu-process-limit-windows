@@ -162,6 +162,11 @@ class CpuLimitSession:
         _set_cpu_hard_limit(self.kernel32, self.job.value, cpu_percent)
         self.cpu_percent = cpu_percent
 
+    def release(self) -> None:
+        if self.job.value:
+            _clear_cpu_limit(self.kernel32, self.job.value)
+        self.close()
+
     def wait(self, timeout_ms: int = 1000) -> int | None:
         result = self.kernel32.dll.WaitForSingleObject(self.process.value, timeout_ms)
         if result == WAIT_TIMEOUT:
@@ -216,6 +221,22 @@ def _set_cpu_hard_limit(
             ctypes.sizeof(info),
         ),
         "SetInformationJobObject(JobObjectCpuRateControlInformation)",
+    )
+
+
+def _clear_cpu_limit(kernel32: Kernel32, job: wintypes.HANDLE) -> None:
+    info = JobObjectCpuRateControlInformation()
+    info.ControlFlags = 0
+    info.CpuRate = 0
+
+    kernel32.check(
+        kernel32.dll.SetInformationJobObject(
+            job,
+            JOB_OBJECT_CPU_RATE_CONTROL_INFORMATION_CLASS,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ),
+        "SetInformationJobObject(clear JobObjectCpuRateControlInformation)",
     )
 
 

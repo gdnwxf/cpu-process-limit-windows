@@ -716,30 +716,31 @@ class CpuLimiterApp(tk.Tk):
             self.status_var.set("未选择受限进程。")
             return
 
-        target_keys: set[str] = set()
+        target_config_keys: set[str] = set()
         target_session_ids: set[str] = set()
         for item_id in item_ids:
-            key = self._limited_item_key(item_id)
-            if key:
-                target_keys.add(key)
+            if self._is_config_row_id(item_id):
+                target_config_keys.add(self._config_key_from_row_id(item_id))
             else:
                 target_session_ids.add(item_id)
 
-        for item_id, process in self.limited_sources.items():
-            if self._process_key(process) in target_keys:
-                target_session_ids.add(item_id)
-
         released = 0
-        for key in target_keys:
+        errors: list[str] = []
+        for key in target_config_keys:
             if key in self.config.process_limits:
                 self.config.process_limits.pop(key, None)
             self.auto_limit_failures.discard(key)
 
         for item_id in target_session_ids:
-            session = self.sessions.pop(item_id, None)
+            session = self.sessions.get(item_id)
             if not session:
                 continue
-            session.close()
+            try:
+                session.release()
+            except Win32Error as exc:
+                errors.append(f"{session.pid}: {exc}")
+                continue
+            self.sessions.pop(item_id, None)
             self.cpu_samples.pop(item_id, None)
             self.cpu_usage.pop(item_id, None)
             process = self.limited_sources.pop(item_id, None)
@@ -751,11 +752,7 @@ class CpuLimiterApp(tk.Tk):
                 self.active_processes[item_id] = process
             released += 1
 
-        released_keys_only = len(target_keys - {
-            self._process_key(process)
-            for item_id, process in self.active_processes.items()
-            if item_id in target_session_ids
-        })
+        released_keys_only = len(target_config_keys)
         self._save_config()
         self._render_active()
         self._render_limited()
@@ -763,6 +760,8 @@ class CpuLimiterApp(tk.Tk):
             self.status_var.set(f"已解除 {released} 个进程的限制。")
         elif released_keys_only:
             self.status_var.set(f"已解除 {released_keys_only} 个应用规则。")
+        if errors:
+            messagebox.showerror("解除限制失败", "\n".join(errors[:8]), parent=self)
 
     def _set_limited_cpu_with_prompt(self) -> None:
         item_ids = self._selected_limited_ids()
@@ -983,7 +982,10 @@ class CpuLimiterApp(tk.Tk):
     def destroy(self) -> None:
         self.tray.stop()
         for session in self.sessions.values():
-            session.close()
+            try:
+                session.release()
+            except Win32Error:
+                session.close()
         self.sessions.clear()
         super().destroy()
 
