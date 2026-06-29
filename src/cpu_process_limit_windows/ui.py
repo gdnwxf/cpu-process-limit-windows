@@ -143,12 +143,13 @@ class CpuLimiterApp(tk.Tk):
             width=14,
         )
         self.add_button.grid(row=1, column=0, sticky="ew", pady=(0, 10))
-        ttk.Button(
+        self.release_button = ttk.Button(
             buttons,
             text="< 解除",
             command=self._release_selected_limited,
             width=14,
-        ).grid(row=2, column=0, sticky="ew")
+        )
+        self.release_button.grid(row=2, column=0, sticky="ew")
 
         right_grip = ttk.Frame(content, width=8, cursor="sb_h_double_arrow")
         right_grip.grid(row=0, column=3, sticky="ns")
@@ -246,6 +247,7 @@ class CpuLimiterApp(tk.Tk):
         self.limited_table.bind("<ButtonRelease-1>", self._finish_heading_drag)
         self.active_table.bind("<Double-1>", self._handle_active_double_click)
         self.limited_table.bind("<Delete>", lambda _event: self._release_selected_limited())
+        self.bind_all("<ButtonPress-1>", self._handle_global_left_click, add="+")
 
     def _refresh_processes(self) -> None:
         try:
@@ -316,10 +318,21 @@ class CpuLimiterApp(tk.Tk):
         query = self.active_search_var.get()
 
         processes = list(self.active_processes.items())
-        processes.sort(
-            key=lambda item: self._active_sort_value(item[1], self.active_sort_column),
+        selected_processes = [item for item in processes if item[0] in selected]
+        other_processes = [item for item in processes if item[0] not in selected]
+
+        def sort_key(item: tuple[str, ProcessInfo]) -> object:
+            return self._active_sort_value(item[1], self.active_sort_column)
+
+        selected_processes.sort(
+            key=sort_key,
             reverse=self.active_sort_desc,
         )
+        other_processes.sort(
+            key=sort_key,
+            reverse=self.active_sort_desc,
+        )
+        processes = selected_processes + other_processes
 
         for item_id, process in processes:
             if item_id in self.sessions:
@@ -703,16 +716,26 @@ class CpuLimiterApp(tk.Tk):
             self.status_var.set("未选择受限进程。")
             return
 
-        released = 0
+        target_keys: set[str] = set()
+        target_session_ids: set[str] = set()
         for item_id in item_ids:
-            if self._is_config_row_id(item_id):
-                key = self._config_key_from_row_id(item_id)
-                if key in self.config.process_limits:
-                    self.config.process_limits.pop(key, None)
-                    self.auto_limit_failures.discard(key)
-                    released += 1
-                continue
+            key = self._limited_item_key(item_id)
+            if key:
+                target_keys.add(key)
+            else:
+                target_session_ids.add(item_id)
 
+        for item_id, process in self.limited_sources.items():
+            if self._process_key(process) in target_keys:
+                target_session_ids.add(item_id)
+
+        released = 0
+        for key in target_keys:
+            if key in self.config.process_limits:
+                self.config.process_limits.pop(key, None)
+            self.auto_limit_failures.discard(key)
+
+        for item_id in target_session_ids:
             session = self.sessions.pop(item_id, None)
             if not session:
                 continue
@@ -721,14 +744,25 @@ class CpuLimiterApp(tk.Tk):
             self.cpu_usage.pop(item_id, None)
             process = self.limited_sources.pop(item_id, None)
             if process:
-                self._remove_process_limit(process)
+                key = self._process_key(process)
+                if key:
+                    self.config.process_limits.pop(key, None)
+                    self.auto_limit_failures.discard(key)
                 self.active_processes[item_id] = process
             released += 1
 
+        released_keys_only = len(target_keys - {
+            self._process_key(process)
+            for item_id, process in self.active_processes.items()
+            if item_id in target_session_ids
+        })
         self._save_config()
         self._render_active()
         self._render_limited()
-        self.status_var.set(f"已解除 {released} 个进程的限制。")
+        if released:
+            self.status_var.set(f"已解除 {released} 个进程的限制。")
+        elif released_keys_only:
+            self.status_var.set(f"已解除 {released_keys_only} 个应用规则。")
 
     def _set_limited_cpu_with_prompt(self) -> None:
         item_ids = self._selected_limited_ids()
@@ -741,17 +775,26 @@ class CpuLimiterApp(tk.Tk):
         if cpu_percent is None:
             return
 
+        target_keys: set[str] = set()
+        target_session_ids: set[str] = set()
+        for item_id in item_ids:
+            key = self._limited_item_key(item_id)
+            if key:
+                target_keys.add(key)
+            else:
+                target_session_ids.add(item_id)
+
+        for item_id, process in self.limited_sources.items():
+            if self._process_key(process) in target_keys:
+                target_session_ids.add(item_id)
+
         updated = 0
         errors: list[str] = []
-        for item_id in item_ids:
-            if self._is_config_row_id(item_id):
-                key = self._config_key_from_row_id(item_id)
-                if key in self.config.process_limits:
-                    self.config.process_limits[key] = cpu_percent
-                    self.auto_limit_failures.discard(key)
-                    updated += 1
-                continue
+        for key in target_keys:
+            self.config.process_limits[key] = cpu_percent
+            self.auto_limit_failures.discard(key)
 
+        for item_id in target_session_ids:
             session = self.sessions.get(item_id)
             if not session:
                 continue
@@ -762,13 +805,27 @@ class CpuLimiterApp(tk.Tk):
                 continue
             process = self.limited_sources.get(item_id)
             if process:
-                self._save_process_limit(process, cpu_percent)
+                key = self._process_key(process)
+                if key:
+                    self.config.process_limits[key] = cpu_percent
+                    self.auto_limit_failures.discard(key)
             updated += 1
 
         self._save_config()
         self._render_limited()
+        updated_keys_only = len(target_keys - {
+            self._process_key(process)
+            for item_id, process in self.limited_sources.items()
+            if item_id in target_session_ids
+        })
         if updated:
-            self.status_var.set(f"已更新 {updated} 个进程，CPU 限制 {cpu_percent:g}%。")
+            self.status_var.set(
+                f"已更新 {updated} 个进程，CPU 限制 {cpu_percent:g}%。"
+            )
+        elif updated_keys_only:
+            self.status_var.set(
+                f"已更新 {updated_keys_only} 个应用规则，CPU 限制 {cpu_percent:g}%。"
+            )
         if errors:
             messagebox.showerror("设置限制失败", "\n".join(errors[:8]), parent=self)
 
@@ -810,6 +867,39 @@ class CpuLimiterApp(tk.Tk):
             table.selection_set(item_id)
             table.focus(item_id)
 
+    def _handle_global_left_click(self, event: tk.Event) -> None:
+        widget = event.widget
+        if isinstance(widget, tk.Menu):
+            return
+        if self._is_widget_or_child(widget, self.add_button) or self._is_widget_or_child(
+            widget,
+            self.release_button,
+        ):
+            return
+
+        if widget is self.active_table:
+            self._clear_table_selection(self.limited_table)
+            return
+        if widget is self.limited_table:
+            self._clear_table_selection(self.active_table)
+            return
+
+        self._clear_table_selection(self.active_table)
+        self._clear_table_selection(self.limited_table)
+
+    def _clear_table_selection(self, table: ttk.Treeview) -> None:
+        selected = table.selection()
+        if selected:
+            table.selection_remove(*selected)
+
+    def _is_widget_or_child(self, widget: tk.Misc, parent: tk.Misc) -> bool:
+        current: tk.Misc | None = widget
+        while current is not None:
+            if current is parent:
+                return True
+            current = current.master
+        return False
+
     def _process_key(self, process: ProcessInfo) -> str:
         return process_config_key(process.name, process.path)
 
@@ -836,6 +926,15 @@ class CpuLimiterApp(tk.Tk):
         if session:
             return session.cpu_percent
         return self.config.default_cpu_percent
+
+    def _limited_item_key(self, item_id: str) -> str:
+        if self._is_config_row_id(item_id):
+            return self._config_key_from_row_id(item_id)
+
+        process = self.limited_sources.get(item_id)
+        if process:
+            return self._process_key(process)
+        return ""
 
     def _save_process_limit(self, process: ProcessInfo, cpu_percent: float) -> None:
         key = self._process_key(process)
